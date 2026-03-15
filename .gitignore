@@ -1,0 +1,6 @@
+*.swp
+*.swo
+.token
+state/
+logs/
+.DS_Store

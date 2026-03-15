@@ -1,0 +1,20 @@
+define MatrixBot MatrixBridge
+attr MatrixBot matrixBaseUrl http://127.0.0.1:8008
+attr MatrixBot matrixUser matrixbot
+attr MatrixBot matrixPassword CHANGE_ME_STRONG_PASSWORD
+attr MatrixBot roomMap me=!roomid_me:example.org,all=!roomid_all:example.org
+attr MatrixBot autoLogin 1
+
+# optional
+#attr MatrixBot tokenFile /opt/fhem/log/MatrixBot.token
+#attr MatrixBot defaultTarget me
+
+# login manually once if needed
+#set MatrixBot login
+
+# examples
+#set MatrixBot send me Test von FHEM
+#set MatrixBot send all Alarm: Bewegung erkannt
+#set MatrixBot sendNotice me Statusmeldung
+#set MatrixBot sendImage me /tmp/test.png
+#set MatrixBot sendPlot me SVG_PowerPlot
