@@ -1,0 +1,23 @@
+name: release-check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  basic-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List project files
+        run: |
+          test -f README.md
+          test -f CHANGELOG.md
+          test -f VERSION
+          test -f FHEM/98_MatrixBridge.pm
+          test -f docs/USAGE.md
+          echo "Basic project structure looks good."
