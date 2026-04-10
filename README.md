@@ -17,14 +17,14 @@ Version: `0.4.0`
 - Usable with plain Matrix rooms or with bridged rooms such as mautrix-whatsapp portal rooms
 
 ### Inbound (Matrix → FHEM)
-- Empfang von Matrix-Nachrichten via `/sync` Long-Polling (non-blocking)
-- Konfigurierbares Bot-Keyword (z.B. `!fhem`) — Bot reagiert nur auf Nachrichten mit diesem Prefix
-- User-Whitelist (`allowedUsers`) für Zugriffskontrolle
-- `list` — zeigt alle steuerbaren Geräte mit Alias und aktuellem Status
-- Gerätesteuerung über FHEM-Alias (z.B. `!fhem Wohnzimmerlampe on`)
-- FHEM-Raum-basiertes Scoping (`exposeRoom`) — nur freigegebene Geräte sind steuerbar
-- Optionales Durchreichen roher FHEM-Befehle (`cmd`, erfordert `allowRawCmds 1`)
-- Persistenter `since`-Token — keine doppelten Nachrichten nach Neustart
+- Receives Matrix messages via `/sync` long-polling (non-blocking)
+- Configurable bot keyword (e.g. `!fhem`) — bot only reacts to messages starting with this prefix
+- User whitelist (`allowedUsers`) for access control
+- `list` — shows all controllable devices with alias and current state
+- Device control via FHEM alias (e.g. `!fhem Wohnzimmerlampe on`)
+- FHEM room-based scoping (`exposeRoom`) — only exposed devices are controllable
+- Optional raw FHEM command passthrough (`cmd`, requires `allowRawCmds 1`)
+- Persistent `since` token — no duplicate messages after restart
 
 ## Folder layout
 
@@ -96,7 +96,7 @@ reload 98_MatrixBridge.pm
 
 ## Minimal generic example
 
-### Outbound (Nachrichten senden)
+### Outbound (sending messages)
 
 ```text
 define MatrixBot MatrixBridge
@@ -106,11 +106,11 @@ attr MatrixBot matrixPassword CHANGE_ME_STRONG_PASSWORD
 attr MatrixBot roomMap me=!roomid_me:example.org,all=!roomid_all:example.org
 attr MatrixBot autoLogin 1
 set MatrixBot login
-set MatrixBot send me Test von FHEM
-set MatrixBot send all Waschmaschine fertig
+set MatrixBot send me Test from FHEM
+set MatrixBot send all Washing machine done
 ```
 
-### Inbound (Befehle empfangen)
+### Inbound (receiving commands)
 
 ```text
 attr MatrixBot botKeyword !fhem
@@ -119,14 +119,14 @@ attr MatrixBot exposeRoom MatrixControl
 attr MatrixBot syncEnabled 1
 ```
 
-Dann im Matrix-Chat:
+Then in the Matrix chat:
 ```text
-!fhem list                        → Geräteliste mit Status
-!fhem Wohnzimmerlampe on          → Gerät schalten
-!fhem cmd set Dummy 1             → Roher FHEM-Befehl (nur mit allowRawCmds 1)
+!fhem list                        → list devices with state
+!fhem Wohnzimmerlampe on          → control a device
+!fhem cmd set Dummy 1             → raw FHEM command (requires allowRawCmds 1)
 ```
 
-Die steuerbaren Geräte werden über den FHEM-Raum `exposeRoom` definiert:
+Controllable devices are defined via the FHEM room `exposeRoom`:
 ```text
 attr Wohnzimmerlampe room MatrixControl
 attr Wohnzimmerlampe alias Wohnzimmerlampe
