@@ -260,6 +260,12 @@ sub MatrixBridge_SendImage($$$$;$) {
   my $data = <$fh>;
   close($fh);
 
+  # Extract image dimensions from PNG header (bytes 16-23)
+  my ($img_w, $img_h);
+  if (length($data) >= 24 && substr($data, 0, 4) eq "\x89PNG") {
+    ($img_w, $img_h) = unpack('NN', substr($data, 16, 8));
+  }
+
   my $filename = $file;
   $filename =~ s{.*/}{};
   $mime ||= MatrixBridge__content_type_for($filename);
@@ -286,6 +292,8 @@ sub MatrixBridge_SendImage($$$$;$) {
       filename => $filename,
       mime => $mime,
       size => length($data),
+      img_w => $img_w,
+      img_h => $img_h,
     }
   );
   return undef;
@@ -293,19 +301,109 @@ sub MatrixBridge_SendImage($$$$;$) {
 
 sub MatrixBridge_SendPlot($$$$) {
   my ($hash, $target, $plot, $caption) = @_;
+  my $name = $hash->{NAME};
 
   my $png_file;
-  if (defined &Signalbot_getPNG) {
-    $png_file = eval { Signalbot_getPNG($hash, $plot) };
-  } else {
-    my $png = eval { plotAsPng($plot) };
-    return 'plotAsPng failed for ' . $plot if !$png;
-    return $png if $png =~ /^Error:/;
-    $png_file = MatrixBridge__write_temp_file($hash, $png, 'png');
+
+  # Try SVG-based conversion via rsvg-convert for best text rendering
+  if ($defs{$plot} && $defs{$plot}{TYPE} eq 'SVG') {
+    $png_file = eval { MatrixBridge__svg_to_png($hash, $plot) };
+    if ($@) {
+      Log3 $name, 3, "MatrixBridge ($name): SVG conversion failed: $@";
+      $png_file = undef;
+    }
+  }
+
+  # Fallback: Signalbot_getPNG or plotAsPng
+  if (!$png_file || !-f ($png_file // '')) {
+    if (defined &Signalbot_getPNG) {
+      $png_file = eval { Signalbot_getPNG($hash, $plot) };
+    } else {
+      my $png = eval { plotAsPng($plot) };
+      return 'plotAsPng failed for ' . $plot if !$png;
+      return $png if $png =~ /^Error:/;
+      $png_file = MatrixBridge__write_temp_file($hash, $png, 'png');
+    }
   }
 
   return 'Could not create plot PNG for ' . $plot if !$png_file || !-f $png_file;
-  return MatrixBridge_SendImage($hash, $target, $png_file, '', 'image/png');
+  return MatrixBridge_SendImage($hash, $target, $png_file, $caption, 'image/png');
+}
+
+sub MatrixBridge__svg_to_png($$) {
+  my ($hash, $plot) = @_;
+  my $name = $hash->{NAME};
+
+  # Check that rsvg-convert is available
+  my $rsvg = `which rsvg-convert 2>/dev/null`;
+  chomp $rsvg;
+  if (!$rsvg) {
+    Log3 $name, 4, "MatrixBridge ($name): rsvg-convert not found, skipping SVG conversion";
+    return undef;
+  }
+
+  # Use FHEM's SVG rendering to get SVG data (same approach as plotAsPng)
+  return undef if !defined($defs{$plot});
+
+  my $devspec = 'TYPE=FHEMWEB';
+  my $port = AttrVal($plot, 'plotAsPngPort', undef);
+  $devspec .= ":FILTER=i:PORT=$port" if defined($port);
+  my @webs = devspec2array($devspec);
+  foreach (@webs) {
+    if (!InternalVal($_, 'TEMPORARY', undef)) {
+      $FW_wname = InternalVal($_, 'NAME', '');
+      last;
+    }
+  }
+  return undef if !$FW_wname;
+
+  $FW_RET = '';
+  $FW_webArgs{dev} = $plot;
+  $FW_webArgs{logdev} = InternalVal($plot, 'LOGDEVICE', '');
+  $FW_webArgs{gplotfile} = InternalVal($plot, 'GPLOTFILE', '');
+  $FW_webArgs{logfile} = InternalVal($plot, 'LOGFILE', 'CURRENT');
+  $FW_pos{zoom} = $FW_pos{zoom} // '';
+  $FW_pos{off} = $FW_pos{off} // '';
+
+  eval { SVG_showLog("$plot/SVG") };
+  my $svg_data = $FW_RET;
+  $FW_RET = '';
+
+  if (!$svg_data || $svg_data !~ /<svg/i) {
+    Log3 $name, 4, "MatrixBridge ($name): could not get SVG data for $plot";
+    return undef;
+  }
+
+  # Increase plot height for better label visibility (match plotsize or use larger default)
+  my ($w, $h) = split(',', AttrVal($plot, 'plotsize', '800,400'));
+  $h = 400 if $h < 400;
+
+  # Ensure viewBox is set for proper scaling
+  if ($svg_data =~ /width='(\d+)px'\s+height='(\d+)px'/) {
+    my ($svg_w, $svg_h) = ($1, $2);
+    if ($svg_data !~ /viewBox/) {
+      $svg_data =~ s/(width='${svg_w}px'\s+height='${svg_h}px')/$1 viewBox="0 0 $svg_w $svg_h"/;
+    }
+  }
+
+  # Write SVG to temp file
+  my $svg_file = MatrixBridge__write_temp_file($hash, $svg_data, 'svg');
+  return undef if !$svg_file;
+
+  # Convert SVG to PNG using rsvg-convert
+  my $png_file = $svg_file;
+  $png_file =~ s/\.svg$/.png/;
+
+  my $ret = system("$rsvg -f png -w $w -h $h -a -o '$png_file' '$svg_file' 2>/dev/null");
+  unlink($svg_file);
+
+  if ($ret != 0 || !-f $png_file) {
+    Log3 $name, 3, "MatrixBridge ($name): rsvg-convert failed (exit $ret)";
+    return undef;
+  }
+
+  Log3 $name, 4, "MatrixBridge ($name): SVG plot converted via rsvg-convert: $png_file";
+  return $png_file;
 }
 
 sub MatrixBridge_LoginCallback($$$) {
@@ -364,15 +462,19 @@ sub MatrixBridge_UploadCallback($$$) {
   my $txn = time() . '-' . int(rand(1000000));
   my $token = $hash->{helper}{access_token} || MatrixBridge__load_token($hash);
   my $url  = AttrVal($hash->{NAME}, 'matrixBaseUrl', '') . '/_matrix/client/v3/rooms/' . MatrixBridge__urlencode($ctx->{room}) . '/send/m.room.message/' . $txn . '?access_token=' . MatrixBridge__urlencode($token);
+  my %img_info = (
+    mimetype => $ctx->{mime},
+    size => $ctx->{size},
+  );
+  $img_info{w} = $ctx->{img_w} if $ctx->{img_w};
+  $img_info{h} = $ctx->{img_h} if $ctx->{img_h};
+
   my $body = encode_json({
     msgtype => 'm.image',
     body => $ctx->{display_body},
     filename => $ctx->{filename},
     url => $json->{content_uri},
-    info => {
-      mimetype => $ctx->{mime},
-      size => $ctx->{size},
-    },
+    info => \%img_info,
   });
 
   MatrixBridge_HttpNonblocking($hash,

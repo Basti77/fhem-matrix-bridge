@@ -3,7 +3,7 @@
 Standalone FHEM module for bidirectional communication between FHEM and a Matrix homeserver.
 
 ## Project status
-Version: `0.3.0`
+Version: `0.4.0`
 
 ## Features
 
@@ -12,7 +12,7 @@ Version: `0.3.0`
 - Token caching in a local token file
 - Sending plain text and notice messages
 - Image/file upload to Matrix
-- Plot sending for FHEM SVG plot devices via `sendPlot`
+- Plot sending for FHEM SVG plot devices via `sendPlot`, with correct rendering of axis labels, titles, and proper image dimensions for mobile clients
 - Room alias mapping (`me`, `all`, etc. to Matrix room IDs)
 - Usable with plain Matrix rooms or with bridged rooms such as mautrix-whatsapp portal rooms
 
@@ -51,14 +51,22 @@ Required Perl/FHEM pieces:
 - `Time::HiRes`
 - `MIME::Base64`
 
-For plot rendering from FHEM SVG devices:
-- `Image::LibRSVG`
+For plot rendering from FHEM SVG devices (recommended):
+- `rsvg-convert` from `librsvg2-bin` — renders SVG text, CSS, and axis labels correctly
+- `Image::LibRSVG` — used as fallback if `rsvg-convert` is not available (may have issues with complex CSS selectors)
 
-On Debian/Ubuntu this usually means:
+On Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install libimage-librsvg-perl
+sudo apt install librsvg2-bin           # recommended
+sudo apt install libimage-librsvg-perl  # fallback
+```
+
+On Arch Linux:
+
+```bash
+sudo pacman -S librsvg
 ```
 
 ### Matrix side
