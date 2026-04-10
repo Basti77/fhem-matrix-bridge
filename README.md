@@ -1,30 +1,30 @@
 # fhem-matrix-bridge
 
-Standalone FHEM module project for sending messages from FHEM to a Matrix homeserver.
-
-The project is meant to stay independent from the live FHEM config so it can be:
-- versioned cleanly
-- documented properly
-- tested separately
-- published to GitHub later
+Standalone FHEM module for bidirectional communication between FHEM and a Matrix homeserver.
 
 ## Project status
-Version: `0.2.0`
-
-Current scope:
-- outbound text messages
-- outbound image/file messages
-- outbound plot messages for FHEM SVG devices
+Version: `0.3.0`
 
 ## Features
-- FHEM module `98_MatrixBridge.pm`
-- password login against the Matrix Client API
-- token caching in a local token file
-- sending plain text and notice messages
-- image/file upload to Matrix
-- plot sending for FHEM SVG plot devices via `sendPlot`
-- room alias mapping (`me`, `all`, etc. to Matrix room IDs)
-- usable with plain Matrix rooms or with bridged rooms such as mautrix-whatsapp portal rooms
+
+### Outbound (FHEM → Matrix)
+- Password login against the Matrix Client API
+- Token caching in a local token file
+- Sending plain text and notice messages
+- Image/file upload to Matrix
+- Plot sending for FHEM SVG plot devices via `sendPlot`
+- Room alias mapping (`me`, `all`, etc. to Matrix room IDs)
+- Usable with plain Matrix rooms or with bridged rooms such as mautrix-whatsapp portal rooms
+
+### Inbound (Matrix → FHEM)
+- Empfang von Matrix-Nachrichten via `/sync` Long-Polling (non-blocking)
+- Konfigurierbares Bot-Keyword (z.B. `!fhem`) — Bot reagiert nur auf Nachrichten mit diesem Prefix
+- User-Whitelist (`allowedUsers`) für Zugriffskontrolle
+- `list` — zeigt alle steuerbaren Geräte mit Alias und aktuellem Status
+- Gerätesteuerung über FHEM-Alias (z.B. `!fhem Wohnzimmerlampe on`)
+- FHEM-Raum-basiertes Scoping (`exposeRoom`) — nur freigegebene Geräte sind steuerbar
+- Optionales Durchreichen roher FHEM-Befehle (`cmd`, erfordert `allowRawCmds 1`)
+- Persistenter `since`-Token — keine doppelten Nachrichten nach Neustart
 
 ## Folder layout
 
@@ -88,6 +88,8 @@ reload 98_MatrixBridge.pm
 
 ## Minimal generic example
 
+### Outbound (Nachrichten senden)
+
 ```text
 define MatrixBot MatrixBridge
 attr MatrixBot matrixBaseUrl http://127.0.0.1:8008
@@ -98,6 +100,28 @@ attr MatrixBot autoLogin 1
 set MatrixBot login
 set MatrixBot send me Test von FHEM
 set MatrixBot send all Waschmaschine fertig
+```
+
+### Inbound (Befehle empfangen)
+
+```text
+attr MatrixBot botKeyword !fhem
+attr MatrixBot allowedUsers @user:example.org
+attr MatrixBot exposeRoom MatrixControl
+attr MatrixBot syncEnabled 1
+```
+
+Dann im Matrix-Chat:
+```text
+!fhem list                        → Geräteliste mit Status
+!fhem Wohnzimmerlampe on          → Gerät schalten
+!fhem cmd set Dummy 1             → Roher FHEM-Befehl (nur mit allowRawCmds 1)
+```
+
+Die steuerbaren Geräte werden über den FHEM-Raum `exposeRoom` definiert:
+```text
+attr Wohnzimmerlampe room MatrixControl
+attr Wohnzimmerlampe alias Wohnzimmerlampe
 ```
 
 ## WhatsApp bridge / relay notes
@@ -137,6 +161,6 @@ This avoids mixing logic into one giant messenger-specific command and works wel
 
 ## Next sensible steps
 - add Signal bridge integration notes / tested room model
-- prepare a clean GitHub repository with license and issue template
 - inventory and remove remaining legacy `Signalbot` leftovers from the live FHEM config
-- optionally add inbound Matrix command handling later
+- add automatic room discovery
+- improve token/session handling beyond simple cache
