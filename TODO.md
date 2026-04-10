@@ -14,7 +14,7 @@
 - [ ] Tag the first public release after one more round of cleanup/testing.
 
 ## Functional enhancements
-- [ ] Add optional inbound Matrix command handling.
+- [x] Add optional inbound Matrix command handling (v0.3.0).
 - [ ] Add room discovery helpers so room IDs do not always need to be copied manually.
 - [ ] Improve token/session handling beyond simple token cache reuse.
 - [ ] Add richer error reporting in FHEM readings for Matrix API/media failures.

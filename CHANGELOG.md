@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-04-10
+- Added inbound Matrix message handling via `/sync` Long-Polling.
+- New attributes: `botKeyword`, `allowedUsers`, `exposeRoom`, `allowRawCmds`, `syncEnabled`, `syncInterval`.
+- New commands: `set startSync`, `set stopSync`.
+- Bot responds only to messages starting with configurable keyword (e.g. `@fhem`).
+- User whitelist via `allowedUsers` attribute for access control.
+- `list` command: lists all devices in the configured `exposeRoom` with alias and state.
+- Device control via alias: e.g. `@fhem Wohnzimmerlampe on`.
+- Optional raw FHEM command passthrough via `cmd` prefix (requires `allowRawCmds 1`).
+- Persistent `since` token for sync position — no duplicate messages after restart.
+- New readings: `syncState`, `lastInboundSender`, `lastInboundRoom`, `lastInboundMessage`.
+- Sync starts automatically after login when `syncEnabled` is set.
+
 ## 0.2.0 - 2026-03-15
 - Added Matrix media upload support for image messages.
 - Added `sendImage` for local file uploads.

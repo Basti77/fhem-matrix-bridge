@@ -80,6 +80,55 @@ If the target room is a `mautrix-whatsapp` portal room, the following must alrea
 
 Without those steps, Matrix delivery may succeed while WhatsApp delivery still fails.
 
+## 8. Inbound: Nachrichten empfangen und Geräte steuern
+
+### Konfiguration
+
+```text
+attr MatrixBot botKeyword @fhem
+attr MatrixBot allowedUsers @user:homeserver.de,@admin:homeserver.de
+attr MatrixBot exposeRoom MatrixControl
+attr MatrixBot syncEnabled 1
+```
+
+### Attribute für Inbound
+
+- `botKeyword` — Prefix, auf das der Bot reagiert (z.B. `@fhem` oder `!fhem`). Ohne dieses Attribut reagiert der Bot auf jede Nachricht.
+- `allowedUsers` — Komma-getrennte Liste erlaubter Matrix-User-IDs (z.B. `@user:example.org`). Ohne dieses Attribut darf jeder User im Raum den Bot steuern.
+- `exposeRoom` — FHEM-Raum, der die steuerbaren Geräte enthält (z.B. `MatrixControl`). Nur Geräte, die in FHEM diesem Raum zugeordnet sind, können über Matrix gesteuert werden.
+- `allowRawCmds` — `0` oder `1`. Erlaubt das Durchreichen roher FHEM-Befehle via `cmd`-Prefix. Standard: `0` (deaktiviert).
+- `syncEnabled` — `0` oder `1`. Aktiviert den `/sync` Long-Polling-Listener. Standard: `0`.
+- `syncInterval` — Wartezeit in Sekunden bei Sync-Fehler bevor erneut versucht wird. Standard: `5`.
+
+### Befehle im Matrix-Chat
+
+```text
+@fhem list                        → Zeigt alle steuerbaren Geräte mit Status
+@fhem Wohnzimmerlampe on          → Schaltet Gerät über Alias oder FHEM-Name
+@fhem Kaffeemaschine off          → Weitere Geräte steuern
+@fhem cmd set Dummy 1             → Roher FHEM-Befehl (nur mit allowRawCmds 1)
+```
+
+### Manuelles Starten/Stoppen
+
+```text
+set MatrixBot startSync
+set MatrixBot stopSync
+```
+
+### FHEM-Raum vorbereiten
+
+Damit der Bot Geräte steuern kann, müssen diese in FHEM dem `exposeRoom` zugeordnet sein:
+
+```text
+attr Wohnzimmerlampe room MatrixControl
+attr Wohnzimmerlampe alias Wohnzimmerlampe
+attr Kaffeemaschine room MatrixControl
+attr Kaffeemaschine alias Kaffeemaschine
+```
+
+Der Bot nutzt das `alias`-Attribut als Anzeigename. Ist kein Alias gesetzt, wird der FHEM-Gerätename verwendet.
+
 ## Readings
 
 The module updates readings such as:
@@ -91,6 +140,10 @@ The module updates readings such as:
 - `lastResult`
 - `user_id`
 - `device_id`
+- `syncState` — Status des Sync-Listeners (`running`, `stopped`, `error`)
+- `lastInboundSender` — Matrix-ID des letzten Absenders
+- `lastInboundRoom` — Raum-ID der letzten eingehenden Nachricht
+- `lastInboundMessage` — Inhalt der letzten eingehenden Nachricht (nach Keyword-Stripping)
 
 ## FHEM notify example
 
@@ -109,8 +162,7 @@ This keeps the FHEM config portable and avoids baking person-specific naming int
 
 ## Current limitations
 
-- outbound sending only
-- no inbound Matrix command processing yet
 - no automatic room discovery yet
 - token reuse is simple cache-based reuse, not a full session manager
 - bridge permission handling is intentionally manual and explicit
+- inbound commands work only for `m.text` messages (no reactions, edits, etc.)

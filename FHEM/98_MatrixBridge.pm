@@ -24,11 +24,21 @@ sub MatrixBridge_HttpNonblocking($$$$);
 sub MatrixBridge_LoginCallback($$$);
 sub MatrixBridge_SendCallback($$$);
 sub MatrixBridge_UploadCallback($$$);
+sub MatrixBridge_SyncStart($);
+sub MatrixBridge_SyncPoll($);
+sub MatrixBridge_SyncCallback($$$);
+sub MatrixBridge_ProcessMessage($$$$);
+sub MatrixBridge_CmdList($$);
+sub MatrixBridge_CmdDevice($$$);
+sub MatrixBridge_CmdRaw($$$);
 sub MatrixBridge__room_for_target($$);
 sub MatrixBridge__json_error($);
 sub MatrixBridge__store_token($$);
 sub MatrixBridge__load_token($);
 sub MatrixBridge__token_file($);
+sub MatrixBridge__store_since($$);
+sub MatrixBridge__load_since($);
+sub MatrixBridge__since_file($);
 sub MatrixBridge__urlencode($);
 sub MatrixBridge__write_temp_file($$$);
 sub MatrixBridge__content_type_for($);
@@ -39,7 +49,7 @@ sub MatrixBridge_Initialize($) {
   $hash->{UndefFn}  = 'MatrixBridge_Undef';
   $hash->{SetFn}    = 'MatrixBridge_Set';
   $hash->{AttrFn}   = 'MatrixBridge_Attr';
-  $hash->{AttrList} = 'matrixBaseUrl matrixUser matrixPassword roomMap defaultTarget tokenFile autoLogin:0,1 disableTLSCheck:0,1 verbose:0,1';
+  $hash->{AttrList} = 'matrixBaseUrl matrixUser matrixPassword roomMap defaultTarget tokenFile autoLogin:0,1 disableTLSCheck:0,1 verbose:0,1 botKeyword allowedUsers exposeRoom allowRawCmds:0,1 syncEnabled:0,1 syncInterval';
 }
 
 sub MatrixBridge_Define($$) {
@@ -60,6 +70,7 @@ sub MatrixBridge_Define($$) {
 
 sub MatrixBridge_Undef($$) {
   my ($hash, $arg) = @_;
+  $hash->{helper}{sync_active} = 0;
   RemoveInternalTimer($hash);
   return undef;
 }
@@ -107,7 +118,18 @@ sub MatrixBridge_Set($@) {
     return MatrixBridge_SendPlot($hash, $target, $plot, $caption);
   }
 
-  return 'Unknown argument ' . $cmd . ', choose one of login:noArg logout:noArg send sendNotice sendImage sendPlot';
+  elsif ($cmd eq 'startSync') {
+    MatrixBridge_SyncStart($hash);
+    return undef;
+  }
+  elsif ($cmd eq 'stopSync') {
+    $hash->{helper}{sync_active} = 0;
+    RemoveInternalTimer($hash, 'MatrixBridge_SyncPoll');
+    readingsSingleUpdate($hash, 'syncState', 'stopped', 1);
+    return undef;
+  }
+
+  return 'Unknown argument ' . $cmd . ', choose one of login:noArg logout:noArg send sendNotice sendImage sendPlot startSync:noArg stopSync:noArg';
 }
 
 sub MatrixBridge_Attr(@) {
@@ -116,6 +138,13 @@ sub MatrixBridge_Attr(@) {
 
   if ($cmd eq 'set' && $attrName eq 'autoLogin' && $attrValue) {
     MatrixBridge_Login($hash, 1);
+  }
+  if ($cmd eq 'set' && $attrName eq 'syncEnabled' && $attrValue) {
+    MatrixBridge_SyncStart($hash);
+  }
+  if ($cmd eq 'set' && $attrName eq 'syncEnabled' && !$attrValue) {
+    $hash->{helper}{sync_active} = 0;
+    RemoveInternalTimer($hash, 'MatrixBridge_SyncPoll');
   }
   return undef;
 }
@@ -299,6 +328,7 @@ sub MatrixBridge_LoginCallback($$$) {
   }
 
   $hash->{helper}{access_token} = $json->{access_token};
+  $hash->{helper}{my_user_id} = $json->{user_id} // '';
   MatrixBridge__store_token($hash, $json->{access_token});
   readingsBeginUpdate($hash);
   readingsBulkUpdate($hash, 'state', 'ready');
@@ -306,6 +336,10 @@ sub MatrixBridge_LoginCallback($$$) {
   readingsBulkUpdate($hash, 'device_id', $json->{device_id} // '');
   readingsBulkUpdate($hash, 'lastError', '-');
   readingsEndUpdate($hash, 1);
+
+  if (AttrVal($name, 'syncEnabled', 0)) {
+    MatrixBridge_SyncStart($hash);
+  }
   return;
 }
 
@@ -469,6 +503,327 @@ sub MatrixBridge__content_type_for($) {
   return 'image/jpeg' if $file =~ /\.jpe?g$/i;
   return 'image/gif' if $file =~ /\.gif$/i;
   return 'application/octet-stream';
+}
+
+# ---------------------------------------------------------------------------
+# Inbound: /sync Long-Polling
+# ---------------------------------------------------------------------------
+
+sub MatrixBridge_SyncStart($) {
+  my ($hash) = @_;
+  my $name = $hash->{NAME};
+
+  my $token = $hash->{helper}{access_token} || MatrixBridge__load_token($hash);
+  if (!$token) {
+    Log3 $name, 3, "MatrixBridge ($name): cannot start sync - no access token";
+    return;
+  }
+  $hash->{helper}{access_token} = $token;
+  $hash->{helper}{sync_active} = 1;
+
+  my $since = MatrixBridge__load_since($hash);
+  $hash->{helper}{sync_since} = $since if $since;
+
+  readingsSingleUpdate($hash, 'syncState', 'running', 1);
+  MatrixBridge_SyncPoll($hash);
+}
+
+sub MatrixBridge_SyncPoll($) {
+  my ($hash) = @_;
+  my $name = $hash->{NAME};
+
+  return if !$hash->{helper}{sync_active};
+
+  my $base  = AttrVal($name, 'matrixBaseUrl', '');
+  my $token = $hash->{helper}{access_token};
+  return if !$base || !$token;
+
+  my $timeout = 30;
+  my $url = $base . '/_matrix/client/v3/sync?timeout=' . ($timeout * 1000)
+          . '&access_token=' . MatrixBridge__urlencode($token);
+
+  if ($hash->{helper}{sync_since}) {
+    $url .= '&since=' . MatrixBridge__urlencode($hash->{helper}{sync_since});
+  }
+
+  MatrixBridge_HttpNonblocking($hash,
+    {
+      url => $url,
+      method => 'GET',
+      timeout => $timeout + 15,
+      ignoreTLS => AttrVal($name, 'disableTLSCheck', 0),
+      callbackName => 'sync',
+    },
+    \&MatrixBridge_SyncCallback,
+    {}
+  );
+}
+
+sub MatrixBridge_SyncCallback($$$) {
+  my ($param, $err, $data, $ctx) = @_;
+  my $hash = $param->{hash};
+  my $name = $hash->{NAME};
+
+  if (!$hash->{helper}{sync_active}) {
+    return;
+  }
+
+  if ($err) {
+    Log3 $name, 3, "MatrixBridge ($name): sync error: $err";
+    readingsSingleUpdate($hash, 'syncState', 'error', 1);
+    readingsSingleUpdate($hash, 'lastError', "sync: $err", 1);
+    # Retry after interval
+    my $interval = AttrVal($name, 'syncInterval', 5);
+    InternalTimer(gettimeofday() + $interval, 'MatrixBridge_SyncPoll', $hash, 0);
+    return;
+  }
+
+  my $json = eval { decode_json($data) };
+  if ($@ || ref($json) ne 'HASH') {
+    Log3 $name, 3, "MatrixBridge ($name): sync: malformed response";
+    my $interval = AttrVal($name, 'syncInterval', 5);
+    InternalTimer(gettimeofday() + $interval, 'MatrixBridge_SyncPoll', $hash, 0);
+    return;
+  }
+
+  # Store next_batch as since token
+  if ($json->{next_batch}) {
+    $hash->{helper}{sync_since} = $json->{next_batch};
+    MatrixBridge__store_since($hash, $json->{next_batch});
+  }
+
+  readingsSingleUpdate($hash, 'syncState', 'running', 1);
+
+  # Process room events
+  my $rooms = $json->{rooms}{join} // {};
+  my $my_user = $hash->{helper}{my_user_id} // '';
+
+  foreach my $room_id (keys %$rooms) {
+    my $timeline = $rooms->{$room_id}{timeline}{events} // [];
+    foreach my $event (@$timeline) {
+      next if !$event->{type} || $event->{type} ne 'm.room.message';
+      next if !$event->{content} || !$event->{sender};
+
+      # Skip own messages
+      next if $my_user && $event->{sender} eq $my_user;
+
+      my $sender  = $event->{sender};
+      my $body    = $event->{content}{body} // '';
+      my $msgtype = $event->{content}{msgtype} // '';
+
+      next if $msgtype ne 'm.text';
+      next if !$body;
+
+      MatrixBridge_ProcessMessage($hash, $room_id, $sender, $body);
+    }
+  }
+
+  # Immediately poll again (long-polling)
+  MatrixBridge_SyncPoll($hash);
+}
+
+# ---------------------------------------------------------------------------
+# Inbound: Message Processing
+# ---------------------------------------------------------------------------
+
+sub MatrixBridge_ProcessMessage($$$$) {
+  my ($hash, $room_id, $sender, $body) = @_;
+  my $name = $hash->{NAME};
+
+  # Check botKeyword
+  my $keyword = AttrVal($name, 'botKeyword', '');
+  if ($keyword) {
+    if ($body !~ /^\s*\Q$keyword\E\s+(.*)$/si) {
+      return;  # Message doesn't start with keyword
+    }
+    $body = $1;  # Strip keyword prefix
+  }
+
+  # Check allowedUsers
+  my $allowed = AttrVal($name, 'allowedUsers', '');
+  if ($allowed) {
+    my %users = map { $_ => 1 } split(/\s*,\s*/, $allowed);
+    if (!$users{$sender}) {
+      Log3 $name, 4, "MatrixBridge ($name): ignoring message from unauthorized user: $sender";
+      return;
+    }
+  }
+
+  # Update readings for inbound message
+  readingsBeginUpdate($hash);
+  readingsBulkUpdate($hash, 'lastInboundSender', $sender);
+  readingsBulkUpdate($hash, 'lastInboundRoom', $room_id);
+  readingsBulkUpdate($hash, 'lastInboundMessage', $body);
+  readingsEndUpdate($hash, 1);
+
+  Log3 $name, 4, "MatrixBridge ($name): inbound from $sender: $body";
+
+  # Parse command
+  $body =~ s/^\s+|\s+$//g;
+
+  if ($body =~ /^list$/i) {
+    MatrixBridge_CmdList($hash, $room_id);
+    return;
+  }
+
+  if ($body =~ /^cmd\s+(.+)$/si) {
+    MatrixBridge_CmdRaw($hash, $room_id, $1);
+    return;
+  }
+
+  # Device control: <alias> <command> [<args>]
+  if ($body =~ /^(\S+)\s+(.+)$/s) {
+    MatrixBridge_CmdDevice($hash, $room_id, $body);
+    return;
+  }
+
+  # Unknown command
+  my $reply = "Unbekannter Befehl: $body\nVerfügbar: list, <Gerät> <Befehl>";
+  my $raw = AttrVal($name, 'allowRawCmds', 0);
+  $reply .= ', cmd <FHEM-Befehl>' if $raw;
+  MatrixBridge_Send($hash, $room_id, $reply, 'm.notice');
+}
+
+# ---------------------------------------------------------------------------
+# Inbound: Command Handlers
+# ---------------------------------------------------------------------------
+
+sub MatrixBridge_CmdList($$) {
+  my ($hash, $room_id) = @_;
+  my $name = $hash->{NAME};
+
+  my $expose_room = AttrVal($name, 'exposeRoom', '');
+  if (!$expose_room) {
+    MatrixBridge_Send($hash, $room_id, "Kein exposeRoom konfiguriert.", 'm.notice');
+    return;
+  }
+
+  my @lines;
+  foreach my $devname (sort keys %defs) {
+    my $dhash = $defs{$devname};
+    next if !$dhash;
+
+    my $rooms_attr = AttrVal($devname, 'room', '');
+    my @dev_rooms = split(/\s*,\s*/, $rooms_attr);
+    next if !grep { $_ eq $expose_room } @dev_rooms;
+
+    my $alias = AttrVal($devname, 'alias', $devname);
+    my $state = ReadingsVal($devname, 'state', '?');
+    push @lines, "$alias ($state)";
+  }
+
+  if (!@lines) {
+    MatrixBridge_Send($hash, $room_id, "Keine Geräte im Raum '$expose_room' gefunden.", 'm.notice');
+    return;
+  }
+
+  my $reply = "Steuerbare Geräte:\n" . join("\n", @lines);
+  MatrixBridge_Send($hash, $room_id, $reply, 'm.notice');
+}
+
+sub MatrixBridge_CmdDevice($$$) {
+  my ($hash, $room_id, $body) = @_;
+  my $name = $hash->{NAME};
+
+  my $expose_room = AttrVal($name, 'exposeRoom', '');
+  if (!$expose_room) {
+    MatrixBridge_Send($hash, $room_id, "Kein exposeRoom konfiguriert.", 'm.notice');
+    return;
+  }
+
+  # Parse: <device_alias> <command> [<args>]
+  my ($dev_input, $cmd_rest) = $body =~ /^(\S+)\s+(.+)$/s;
+  if (!$dev_input || !$cmd_rest) {
+    MatrixBridge_Send($hash, $room_id, "Syntax: <Gerät> <Befehl> [Parameter]", 'm.notice');
+    return;
+  }
+
+  # Find device by alias or name in exposeRoom
+  my $target_dev;
+  foreach my $devname (keys %defs) {
+    my $dhash = $defs{$devname};
+    next if !$dhash;
+
+    my $rooms_attr = AttrVal($devname, 'room', '');
+    my @dev_rooms = split(/\s*,\s*/, $rooms_attr);
+    next if !grep { $_ eq $expose_room } @dev_rooms;
+
+    my $alias = AttrVal($devname, 'alias', '');
+    if (lc($alias) eq lc($dev_input) || lc($devname) eq lc($dev_input)) {
+      $target_dev = $devname;
+      last;
+    }
+  }
+
+  if (!$target_dev) {
+    MatrixBridge_Send($hash, $room_id, "Gerät '$dev_input' nicht gefunden im Raum '$expose_room'.", 'm.notice');
+    return;
+  }
+
+  my $fhem_cmd = "set $target_dev $cmd_rest";
+  Log3 $name, 3, "MatrixBridge ($name): executing: $fhem_cmd";
+  my $result = eval { fhem($fhem_cmd, 1) };
+
+  if ($@) {
+    MatrixBridge_Send($hash, $room_id, "Fehler: $@", 'm.notice');
+    return;
+  }
+
+  my $alias = AttrVal($target_dev, 'alias', $target_dev);
+  my $reply = defined($result) && $result ne '' ? "$alias: $result" : "$alias: OK";
+  MatrixBridge_Send($hash, $room_id, $reply, 'm.notice');
+}
+
+sub MatrixBridge_CmdRaw($$$) {
+  my ($hash, $room_id, $cmd) = @_;
+  my $name = $hash->{NAME};
+
+  if (!AttrVal($name, 'allowRawCmds', 0)) {
+    MatrixBridge_Send($hash, $room_id, "Raw-Befehle sind nicht aktiviert (allowRawCmds).", 'm.notice');
+    return;
+  }
+
+  Log3 $name, 3, "MatrixBridge ($name): raw cmd: $cmd";
+  my $result = eval { fhem($cmd, 1) };
+
+  if ($@) {
+    MatrixBridge_Send($hash, $room_id, "Fehler: $@", 'm.notice');
+    return;
+  }
+
+  my $reply = defined($result) && $result ne '' ? $result : 'OK';
+  MatrixBridge_Send($hash, $room_id, $reply, 'm.notice');
+}
+
+# ---------------------------------------------------------------------------
+# Since-Token Persistence
+# ---------------------------------------------------------------------------
+
+sub MatrixBridge__since_file($) {
+  my ($hash) = @_;
+  my $modpath = AttrVal('global', 'modpath', './');
+  return $modpath . '/log/' . $hash->{NAME} . '.since';
+}
+
+sub MatrixBridge__store_since($$) {
+  my ($hash, $since) = @_;
+  my $file = MatrixBridge__since_file($hash);
+  if (open(my $fh, '>', $file)) {
+    print $fh $since;
+    close($fh);
+  }
+}
+
+sub MatrixBridge__load_since($) {
+  my ($hash) = @_;
+  my $file = MatrixBridge__since_file($hash);
+  return undef if !-e $file;
+  open(my $fh, '<', $file) or return undef;
+  local $/ = undef;
+  my $since = <$fh>;
+  close($fh);
+  $since =~ s/\s+$// if defined $since;
+  return $since;
 }
 
 1;
