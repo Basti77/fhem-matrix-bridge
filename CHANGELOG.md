@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 - 2026-10-15
+- Fixed readings with non-ASCII content (umlauts, emoji) breaking FHEM output: `lastResult`, `lastInboundSender` and `lastInboundMessage` were stored as Perl character strings, so `list MatrixBot` returned nothing and the device detail page aborted ("Wide character in print"). Readings and the inbound log line are now written as UTF-8 bytes.
+- Self-filter after FHEM restart: `my_user_id` is restored from the `user_id` reading when a stored token is used without a fresh login, so the bot no longer reacts to its own messages.
+
 ## 0.4.0 - 2026-04-10
 - Fixed plot display on mobile Matrix clients (Element X / Android): images were cropped to a center section because width/height metadata was missing from the Matrix image event. The module now reads PNG dimensions from the file header and sends `w`/`h` in the `m.image` info object.
 - Fixed plot display on Element Desktop: axis labels and plot title were missing because `Image::LibRSVG` (Perl) has known issues with complex CSS selectors in FHEM SVG output. The module now prefers `rsvg-convert` (CLI) for SVG-to-PNG conversion, which renders text and CSS correctly. Falls back to `plotAsPng` if `rsvg-convert` is not installed.

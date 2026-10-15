@@ -62,6 +62,11 @@ sub MatrixBridge_Define($$) {
   readingsSingleUpdate($hash, 'lastError', '-', 1);
   readingsSingleUpdate($hash, 'lastResult', '-', 1);
 
+  # Self-Filter braucht my_user_id; nach FHEM-Restart mit gespeichertem Token
+  # gibt es keinen frischen Login, also Reading wieder als helper-Variable laden.
+  my $stored_uid = ReadingsVal($hash->{NAME}, 'user_id', '');
+  $hash->{helper}{my_user_id} = $stored_uid if $stored_uid;
+
   if (AttrVal($hash->{NAME}, 'autoLogin', 1)) {
     MatrixBridge_Login($hash, 1);
   }
@@ -498,6 +503,14 @@ sub MatrixBridge_UploadCallback($$$) {
   return;
 }
 
+sub MatrixBridge__bytes($) {
+  # FHEM erwartet in Readings und im Log UTF-8-Bytes, keine Perl-Zeichenstrings
+  # (sonst bricht die Ausgabe von list/Detailseite mit "Wide character" ab).
+  my ($s) = @_;
+  return $s if !defined $s || !utf8::is_utf8($s);
+  return encode_utf8($s);
+}
+
 sub MatrixBridge_SendCallback($$$) {
   my ($param, $err, $data, $ctx) = @_;
   my $hash = $param->{hash};
@@ -521,7 +534,7 @@ sub MatrixBridge_SendCallback($$$) {
   readingsBulkUpdate($hash, 'lastEventId', $json->{event_id});
   readingsBulkUpdate($hash, 'lastTarget', $ctx->{target});
   readingsBulkUpdate($hash, 'lastRoom', $ctx->{room});
-  readingsBulkUpdate($hash, 'lastResult', $ctx->{body});
+  readingsBulkUpdate($hash, 'lastResult', MatrixBridge__bytes($ctx->{body}));
   readingsBulkUpdate($hash, 'lastError', '-');
   readingsEndUpdate($hash, 1);
   return;
@@ -753,12 +766,12 @@ sub MatrixBridge_ProcessMessage($$$$) {
 
   # Update readings for inbound message
   readingsBeginUpdate($hash);
-  readingsBulkUpdate($hash, 'lastInboundSender', $sender);
+  readingsBulkUpdate($hash, 'lastInboundSender', MatrixBridge__bytes($sender));
   readingsBulkUpdate($hash, 'lastInboundRoom', $room_id);
-  readingsBulkUpdate($hash, 'lastInboundMessage', $body);
+  readingsBulkUpdate($hash, 'lastInboundMessage', MatrixBridge__bytes($body));
   readingsEndUpdate($hash, 1);
 
-  Log3 $name, 4, "MatrixBridge ($name): inbound from $sender: $body";
+  Log3 $name, 4, "MatrixBridge ($name): inbound from ".MatrixBridge__bytes($sender).": ".MatrixBridge__bytes($body);
 
   # Parse command
   $body =~ s/^\s+|\s+$//g;
